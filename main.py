@@ -23,7 +23,7 @@ from .api.ithome_rss import ITHomeRSS
 from .api.zaobao_api import ZaobaoAPI
 
 
-@register("astrbot_plugin_zhenxunribao_mod", "Astraea35", "小真寻记者为你献上今日报道！（魔改版）", "1.3.1", "https://github.com/Astraea35/astrbot_plugin_zhenxunribao_mod")
+@register("astrbot_plugin_zhenxunribao_mod", "Astraea35", "小真寻记者为你献上今日报道！（魔改版）", "1.4.0", "https://github.com/Astraea35/astrbot_plugin_zhenxunribao_mod")
 class ZhenxunReportPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
@@ -157,7 +157,7 @@ class ZhenxunReportPlugin(Star):
         max_anime_count = self.config.get("max_anime_count", 4)
         max_news_count = self.config.get("max_news_count", 5)
         max_hotword_count = self.config.get("max_hotword_count", 4)
-        max_holiday_count = self.config.get("max_holiday_count", 3)
+        max_holiday_count = self.config.get("max_holiday_count", 5)
 
         date_info = get_current_date_info()
         anime_list, bili_hotwords, hitokoto_data, moyu_list, world_news, it_news = (

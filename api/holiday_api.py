@@ -3,7 +3,7 @@
 """
 import json
 import aiohttp
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from typing import List, Dict, Optional
 
 from astrbot.api import logger
@@ -39,16 +39,18 @@ class HolidayAPI(BaseAPI):
             logger.warning(f"请求节假日 API 失败: {e}")
             return None
 
-    def parse_holidays(self, api_data: Optional[Dict], max_count: int = 3) -> List[Dict]:
-        if not api_data:
-            return self._get_default_holidays()
+    def parse_holidays(self, api_data: Optional[Dict], max_count: int = 5) -> List[Dict]:
         try:
-            holidays_data = api_data.get('data', [])
-            if not isinstance(holidays_data, list) or len(holidays_data) == 0:
-                return self._get_default_holidays()
             today = date.today()
-            processed_holidays = []
-            seen_holidays = set()
+            processed_holidays = self._get_calendar_festivals(today)
+            seen_holidays = {holiday['name'] for holiday in processed_holidays}
+            holidays_data = api_data.get('data', []) if api_data else []
+
+            # ALAPI supplies the authoritative dates for statutory days off.
+            # Calendar festivals below keep the report useful when the API only
+            # returns a small number of remaining days off.
+            if not isinstance(holidays_data, list):
+                holidays_data = []
             for holiday in holidays_data:
                 if not isinstance(holiday, dict):
                     continue
@@ -84,6 +86,67 @@ class HolidayAPI(BaseAPI):
             logger.error(f"解析节假日数据时出错: {e}", exc_info=True)
             return self._get_default_holidays()
 
+    def _get_calendar_festivals(self, today: date) -> List[Dict]:
+        """Return upcoming fixed-date and lunar festivals for this and next year."""
+        fixed_festivals = {
+            (1, 1): '元旦',
+            (2, 14): '情人节',
+            (3, 8): '妇女节',
+            (5, 1): '劳动节',
+            (5, 4): '青年节',
+            (6, 1): '儿童节',
+            (8, 1): '建军节',
+            (9, 10): '教师节',
+            (10, 1): '国庆节',
+            (12, 24): '平安夜',
+            (12, 25): '圣诞节',
+        }
+        lunar_festivals = {
+            (1, 1): '春节',
+            (1, 15): '元宵节',
+            (5, 5): '端午节',
+            (7, 7): '七夕节',
+            (7, 15): '中元节',
+            (8, 15): '中秋节',
+            (9, 9): '重阳节',
+            (12, 8): '腊八节',
+        }
+        festivals = []
+        seen_names = set()
+
+        def add_festival(festival_date: date, name: str) -> None:
+            if festival_date < today or name in seen_names:
+                return
+            seen_names.add(name)
+            festivals.append({'name': name, 'days_left': (festival_date - today).days})
+
+        for year in (today.year, today.year + 1):
+            for (month, day), name in fixed_festivals.items():
+                add_festival(date(year, month, day), name)
+            add_festival(date(year, 4, self._get_qingming_day(year)), '清明节')
+
+        try:
+            from zhdate import ZhDate
+            current = date(today.year, 1, 1)
+            end = date(today.year + 1, 12, 31)
+            while current <= end:
+                lunar = ZhDate.from_datetime(datetime.combine(current, datetime.min.time()))
+                name = lunar_festivals.get((lunar.lunar_month, lunar.lunar_day))
+                if name:
+                    add_festival(current, name)
+                current += timedelta(days=1)
+        except ImportError:
+            logger.warning("未安装 zhdate，跳过农历节日计算")
+        except Exception as e:
+            logger.warning(f"计算农历节日失败: {e}")
+
+        return festivals
+
+    @staticmethod
+    def _get_qingming_day(year: int) -> int:
+        """Calculate Qingming's Gregorian day for years 2000-2099."""
+        return int((year % 100) * 0.2422 + 4.81) - int((year % 100) / 4)
+
     def _get_default_holidays(self) -> List[Dict]:
         return [
             {'name': '周末', 'days_left': 3},
@@ -91,6 +154,6 @@ class HolidayAPI(BaseAPI):
             {'name': '清明节', 'days_left': 78}
         ]
 
-    async def get_moyu_list_async(self, max_count: int = 3) -> List[Dict]:
+    async def get_moyu_list_async(self, max_count: int = 5) -> List[Dict]:
         api_data = await self.get_holidays_async()
         return self.parse_holidays(api_data, max_count)

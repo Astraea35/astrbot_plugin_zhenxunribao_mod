@@ -28,7 +28,7 @@
     "description": "摸鱼日历最大显示数量",
     "type": "int",
     "hint": "建议设置为3-5之间",
-    "default": 3
+    "default": 5
   },
   "render_dpr": {
     "description": "渲染清晰度（DPR）",
