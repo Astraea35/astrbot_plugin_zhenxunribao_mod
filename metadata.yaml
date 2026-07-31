@@ -1,6 +1,6 @@
 name: astrbot_plugin_zhenxunribao_mod
 display_name: 真寻日报 (Mod)
 desc: 从 nonebot-plugin-zxreport 移植并魔改重构的 AstrBot 真寻日报插件。新增代理支持、自动重试、动态问候语与渲染清晰度调节等功能。
-version: 1.4.0
+version: 1.4.1
 author: "Astraea35"
 repo: https://github.com/Astraea35/astrbot_plugin_zhenxunribao_mod
