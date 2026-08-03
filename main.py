@@ -4,6 +4,7 @@ import os
 import re
 import tempfile
 from datetime import datetime, timedelta, time
+from threading import Lock
 from urllib.request import pathname2url
 
 import aiohttp
@@ -23,8 +24,10 @@ from .api.ithome_rss import ITHomeRSS
 from .api.zaobao_api import ZaobaoAPI
 
 
-@register("astrbot_plugin_zhenxunribao_mod", "Astraea35", "小真寻记者为你献上今日报道！（魔改版）", "1.4.1", "https://github.com/Astraea35/astrbot_plugin_zhenxunribao_mod")
+@register("astrbot_plugin_zhenxunribao_mod", "Astraea35", "小真寻记者为你献上今日报道！（魔改版）", "1.4.2", "https://github.com/Astraea35/astrbot_plugin_zhenxunribao_mod")
 class ZhenxunReportPlugin(Star):
+    _SCHEDULER_STATE_ATTR = '_astrbot_zhenxunribao_mod_scheduler_state'
+
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
         self.config = config
@@ -45,14 +48,67 @@ class ZhenxunReportPlugin(Star):
         self._init_api_instances(api_token, self.http_session)
 
         self.push_task = None
+        self._scheduler_init_task = None
+        self._scheduler_claimed = False
+        self._scheduler_state = self._get_scheduler_state()
         self.group_umo_mapping = {}
         self._load_group_mapping()
 
         if config.get("enable_scheduled_push", False):
-            asyncio.create_task(self._delayed_start_scheduler())
-            logger.info("定时推送任务正在初始化...")
+            if self._claim_scheduler():
+                self._scheduler_claimed = True
+                self._scheduler_init_task = asyncio.create_task(
+                    self._delayed_start_scheduler()
+                )
+                logger.info("定时推送任务正在初始化...")
+            else:
+                logger.warning('检测到其他实例已占用定时推送，当前实例跳过启动')
 
         logger.info("真寻日报插件已加载")
+
+    def _get_scheduler_state(self):
+        state = getattr(self.context, self._SCHEDULER_STATE_ATTR, None)
+        if state is None:
+            state = {
+                'lock': Lock(),
+                'owner': None,
+                'push_in_progress': False,
+                'last_push_date': None,
+            }
+            setattr(self.context, self._SCHEDULER_STATE_ATTR, state)
+        return state
+
+    def _claim_scheduler(self) -> bool:
+        with self._scheduler_state['lock']:
+            owner = self._scheduler_state.get('owner')
+            if owner is not None and owner is not self:
+                return False
+            self._scheduler_state['owner'] = self
+            return True
+
+    def _release_scheduler(self):
+        if not self._scheduler_claimed:
+            return
+        with self._scheduler_state['lock']:
+            if self._scheduler_state.get('owner') is self:
+                self._scheduler_state['owner'] = None
+        self._scheduler_claimed = False
+
+    def _begin_daily_push(self, push_date) -> bool:
+        with self._scheduler_state['lock']:
+            if (
+                self._scheduler_state.get('push_in_progress')
+                or self._scheduler_state.get('last_push_date') == push_date
+            ):
+                return False
+            self._scheduler_state['push_in_progress'] = True
+            return True
+
+    def _finish_daily_push(self, push_date, success: bool):
+        with self._scheduler_state['lock']:
+            self._scheduler_state['push_in_progress'] = False
+            if success:
+                self._scheduler_state['last_push_date'] = push_date
 
     def _init_api_instances(self, api_token: str, session: aiohttp.ClientSession):
         """初始化所有 API 实例（支持代理）"""
@@ -426,8 +482,16 @@ html, body {
                 wait_seconds = (next_push - now).total_seconds()
                 logger.info(f"定时推送任务已启动，下次推送时间: {next_push.strftime('%Y-%m-%d %H:%M:%S')}")
                 await asyncio.sleep(wait_seconds)
+                push_date = datetime.now().date()
+                if not self._begin_daily_push(push_date):
+                    logger.warning('检测到当天定时推送已执行或正在执行，跳过重复任务')
+                    continue
                 logger.info("开始执行定时推送")
-                await self._push_daily_to_groups(push_groups)
+                push_success = False
+                try:
+                    push_success = await self._push_daily_to_groups(push_groups)
+                finally:
+                    self._finish_daily_push(push_date, push_success)
             except asyncio.CancelledError:
                 logger.info("定时推送任务已取消")
                 break
@@ -441,8 +505,8 @@ html, body {
             logger.info(f"开始生成日报图片，目标群组数量: {len(group_list)}")
             image_path = await self._generate_daily_image()
             if not image_path or not os.path.exists(image_path):
-                logger.error(f"日报图片生成失败或文件不存在: {image_path}")
-                return
+                logger.error(f'日报图片生成失败或文件不存在: {image_path}')
+                return False
             logger.info(f"日报图片生成成功: {image_path}")
             with open(image_path, 'rb') as f:
                 image_data = f.read()
@@ -472,9 +536,11 @@ html, body {
                             logger.warning(f"推送失败，群组: {clean_group_id}")
                 except Exception as e:
                     logger.error(f"推送到群组 {group_id} 时出错: {e}", exc_info=True)
-            logger.info(f"定时推送完成，成功: {success_count}/{len(group_list)}")
+            logger.info(f'定时推送完成，成功: {success_count}/{len(group_list)}')
+            return success_count > 0
         except Exception as e:
-            logger.error(f"定时推送日报失败: {e}", exc_info=True)
+            logger.error(f'定时推送日报失败: {e}', exc_info=True)
+            return False
         finally:
             # 确保无论成功与否均清理临时图片文件
             if image_path and os.path.exists(image_path):
@@ -660,13 +726,18 @@ html, body {
 
     async def terminate(self):
         logger.info("真寻日报插件正在卸载...")
-        if self.push_task and not self.push_task.done():
-            self.push_task.cancel()
-            try:
-                await self.push_task
-            except asyncio.CancelledError:
-                pass
-            logger.info("定时推送任务已取消")
+        for task_name in ('_scheduler_init_task', 'push_task'):
+            task = getattr(self, task_name, None)
+            if task and not task.done():
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+                logger.info("定时推送任务已取消")
+        self._scheduler_init_task = None
+        self.push_task = None
+        self._release_scheduler()
         if self.http_session and not self.http_session.closed:
             await self.http_session.close()
             logger.info("HTTP session 已关闭")
