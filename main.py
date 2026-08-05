@@ -24,7 +24,7 @@ from .api.ithome_rss import ITHomeRSS
 from .api.zaobao_api import ZaobaoAPI
 
 
-@register("astrbot_plugin_zhenxunribao_mod", "Astraea35", "小真寻记者为你献上今日报道！（魔改版）", "1.4.2", "https://github.com/Astraea35/astrbot_plugin_zhenxunribao_mod")
+@register("astrbot_plugin_zhenxunribao_mod", "Astraea35", "小真寻记者为你献上今日报道！（魔改版）", "1.4.3", "https://github.com/Astraea35/astrbot_plugin_zhenxunribao_mod")
 class ZhenxunReportPlugin(Star):
     _SCHEDULER_STATE_ATTR = '_astrbot_zhenxunribao_mod_scheduler_state'
 
@@ -152,9 +152,35 @@ class ZhenxunReportPlugin(Star):
             retry_times=self.retry_times
         )
 
+    def _has_other_scheduler_task(self) -> bool:
+        current_task = asyncio.current_task()
+        for task in asyncio.all_tasks():
+            if task is current_task or task.done():
+                continue
+            coroutine = task.get_coro()
+            code = getattr(coroutine, 'cr_code', None)
+            if not code or code.co_name not in {
+                '_delayed_start_scheduler',
+                '_scheduled_push_task',
+            }:
+                continue
+            frame = getattr(coroutine, 'cr_frame', None)
+            owner = frame.f_locals.get('self') if frame else None
+            if (
+                owner is not None
+                and owner is not self
+                and getattr(owner, 'context', None) is self.context
+            ):
+                return True
+        return False
+
     async def _delayed_start_scheduler(self):
         try:
             await asyncio.sleep(15)
+            if self._has_other_scheduler_task():
+                logger.warning('检测到旧版定时推送任务仍在运行，当前实例跳过启动')
+                self._release_scheduler()
+                return
             if self.push_task and not self.push_task.done():
                 self.push_task.cancel()
                 try:
