@@ -14,6 +14,7 @@ from playwright.async_api import async_playwright
 from astrbot.api import AstrBotConfig, logger
 from astrbot.api.event import MessageChain, filter, AstrMessageEvent
 from astrbot.api.star import Context, Star, register, StarTools
+from astrbot.api.message_components import Plain
 
 from .api.bgm_api import BGMAPI
 from .api.bilibili_api import BilibiliAPI
@@ -24,7 +25,7 @@ from .api.ithome_rss import ITHomeRSS
 from .api.zaobao_api import ZaobaoAPI
 
 
-@register("astrbot_plugin_zhenxunribao_mod", "Astraea35", "小真寻记者为你献上今日报道！（魔改版）", "1.4.3", "https://github.com/Astraea35/astrbot_plugin_zhenxunribao_mod")
+@register("astrbot_plugin_zhenxunribao_mod", "Astraea35", "小真寻记者为你献上今日报道！（魔改版）", "1.4.4", "https://github.com/Astraea35/astrbot_plugin_zhenxunribao_mod")
 class ZhenxunReportPlugin(Star):
     _SCHEDULER_STATE_ATTR = '_astrbot_zhenxunribao_mod_scheduler_state'
 
@@ -203,6 +204,13 @@ class ZhenxunReportPlugin(Star):
     @filter.command("日报")
     async def daily_news(self, event: AstrMessageEvent):
         umo = event.unified_msg_origin
+        if event.get_platform_name() == "telegram":
+            try:
+                yield event.plain_result(await self._generate_daily_text())
+            except Exception as error:
+                logger.error("Telegram daily report failed: %s", type(error).__name__)
+                yield event.plain_result("日报获取失败，请稍后重试。")
+            return
         logger.info(f"日报命令触发，unified_msg_origin: {umo}")
         group_id = self._extract_group_id(umo)
         if group_id and group_id not in self.group_umo_mapping:
@@ -233,6 +241,46 @@ class ZhenxunReportPlugin(Star):
             f"unified_msg_origin: {umo}\n\n"
             f"💡 请将此值添加到插件配置的「定时推送目标群组列表」中"
         )
+
+    async def _generate_daily_text(self) -> str:
+        """Use the same sources as the QQ poster without rendering an image."""
+        anime, hotwords, hitokoto, holidays, world, technology = await self._fetch_all_data(
+            max_anime_count=self.config.get("max_anime_count", 4),
+            max_news_count=self.config.get("max_news_count", 5),
+            max_hotword_count=self.config.get("max_hotword_count", 4),
+            max_holiday_count=self.config.get("max_holiday_count", 5),
+        )
+        date = get_current_date_info()
+        lines = [
+            "**今日日报**",
+            f"{date.get('date_str', '')} {date.get('week_cn', '')} {date.get('cn_date_str', '')}",
+        ]
+        for title, items in (
+            ("世界新闻", world), ("IT 科技", technology),
+            ("今日新番", anime), ("B站热搜", hotwords),
+        ):
+            if not items:
+                continue
+            lines.extend(("", f"**{title}**"))
+            for index, item in enumerate(items, 1):
+                value = (
+                    item.get("title") or item.get("keyword") or item.get("name") or ""
+                    if isinstance(item, dict) else str(item)
+                )
+                if value:
+                    lines.append(f"{index}. {value}")
+        if holidays:
+            lines.extend(("", "**节假日倒计时**"))
+            lines.extend(
+                f"- {item.get('name', '')}：{item.get('days_left', '')} 天"
+                for item in holidays if isinstance(item, dict)
+            )
+        if hitokoto and hitokoto.get("hitokoto"):
+            lines.extend((
+                "", "**今日一言**", hitokoto["hitokoto"],
+                f"出处：{hitokoto.get('from', '佚名')}",
+            ))
+        return "\n".join(lines)
 
     async def _generate_daily_image(self) -> str:
         logger.info("开始生成日报")
@@ -527,6 +575,26 @@ html, body {
 
     async def _push_daily_to_groups(self, group_list: list):
         image_path = None
+        success_count = 0
+        qq_targets = []
+        telegram_text = None
+        for target in group_list:
+            platform = (
+                self.context.get_platform_inst(str(target).split(":", 1)[0])
+                if ":" in str(target) else None
+            )
+            if platform and platform.meta().name == "telegram":
+                try:
+                    if telegram_text is None:
+                        telegram_text = await self._generate_daily_text()
+                    await self.context.send_message(str(target), MessageChain([Plain(telegram_text)]))
+                    success_count += 1
+                except Exception as error:
+                    logger.error("Telegram daily push failed: %s", type(error).__name__)
+            else:
+                qq_targets.append(target)
+        if not qq_targets:
+            return success_count > 0
         try:
             logger.info(f"开始生成日报图片，目标群组数量: {len(group_list)}")
             image_path = await self._generate_daily_image()
@@ -538,8 +606,7 @@ html, body {
                 image_data = f.read()
             image_b64 = base64.b64encode(image_data).decode()
 
-            success_count = 0
-            for group_id in group_list:
+            for group_id in qq_targets:
                 try:
                     clean_group_id = self._extract_group_id(group_id)
                     logger.debug(f"正在向群组 {clean_group_id} 发送日报...")
