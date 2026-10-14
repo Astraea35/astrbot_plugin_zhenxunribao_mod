@@ -1,7 +1,8 @@
 # 真寻日报魔改版 (astrbot_plugin_zhenxunribao_mod)
 
-Telegram 的 `/日报` 使用与 QQ 日报相同的数据源，默认发送文字。定时推送
-目标支持完整 TG 会话标识，例如 `nas_tg:FriendMessage:123456789`；这些目标
+Telegram 的 `/日报` 使用与 QQ 日报相同的数据源，默认发送文字。
+文字按栏目分组，栏目标题和各条内容之间保留空行，便于手机阅读。
+定时推送目标支持完整 TG 会话标识，例如 `nas_tg:FriendMessage:123456789`；这些目标
 通过 AstrBot 平台发送文字，QQ 继续发送原有日报图片。
 
 ✨ 基于 AstrBot 的一个插件 ✨

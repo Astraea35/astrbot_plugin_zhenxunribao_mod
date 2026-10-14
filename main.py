@@ -253,6 +253,7 @@ class ZhenxunReportPlugin(Star):
         date = get_current_date_info()
         lines = [
             "**今日日报**",
+            "",
             f"{date.get('date_str', '')} {date.get('week_cn', '')} {date.get('cn_date_str', '')}",
         ]
         for title, items in (
@@ -261,23 +262,26 @@ class ZhenxunReportPlugin(Star):
         ):
             if not items:
                 continue
-            lines.extend(("", f"**{title}**"))
+            lines.extend(("", f"**{title}**", ""))
             for index, item in enumerate(items, 1):
                 value = (
                     item.get("title") or item.get("keyword") or item.get("name") or ""
                     if isinstance(item, dict) else str(item)
                 )
                 if value:
-                    lines.append(f"{index}. {value}")
+                    link = item.get("url") or item.get("link") if isinstance(item, dict) else ""
+                    if link and str(link).startswith(("http://", "https://")):
+                        value = f"[{value}]({link})"
+                    lines.extend((f"{index}. {value}", ""))
         if holidays:
-            lines.extend(("", "**节假日倒计时**"))
+            lines.extend(("", "**节假日倒计时**", ""))
             lines.extend(
                 f"- {item.get('name', '')}：{item.get('days_left', '')} 天"
                 for item in holidays if isinstance(item, dict)
             )
         if hitokoto and hitokoto.get("hitokoto"):
             lines.extend((
-                "", "**今日一言**", hitokoto["hitokoto"],
+                "", "**今日一言**", "", hitokoto["hitokoto"], "",
                 f"出处：{hitokoto.get('from', '佚名')}",
             ))
         return "\n".join(lines)

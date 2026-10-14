@@ -22,7 +22,7 @@ async def test_telegram_report_uses_all_original_sources_without_a_browser():
     plugin.config = {}
     plugin._fetch_all_data = AsyncMock(return_value=(
         [{"title": "新番"}], ["热搜"], {"hitokoto": "一言", "from": "作者"},
-        [{"name": "元旦", "days_left": 79}], ["世界新闻"], ["科技新闻"],
+        [{"name": "元旦", "days_left": 79}], ["世界新闻", "第二条新闻"], ["科技新闻"],
     ))
     plugin._generate_daily_image = AsyncMock()
     event = SimpleNamespace(
@@ -32,4 +32,6 @@ async def test_telegram_report_uses_all_original_sources_without_a_browser():
     )
     results = [result async for result in plugin.daily_news(event)]
     assert all(value in results[0] for value in ("新番", "热搜", "一言", "79", "世界新闻", "科技新闻"))
+    assert "**世界新闻**\n\n1. 世界新闻\n\n2. 第二条新闻" in results[0]
+    assert "**今日一言**\n\n一言\n\n出处：作者" in results[0]
     plugin._generate_daily_image.assert_not_awaited()
