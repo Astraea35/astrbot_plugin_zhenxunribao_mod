@@ -12,6 +12,11 @@
     "hint": "建议设置为4-8之间",
     "default": 4
   },
+  "tg_cover_proxy": {
+    "description": "Telegram 新番封面下载使用的 NAS HTTP 代理",
+    "type": "string",
+    "default": ""
+  },
   "max_news_count": {
     "description": "新闻最大显示数量",
     "type": "int",

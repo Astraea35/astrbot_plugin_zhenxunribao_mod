@@ -14,7 +14,7 @@ from playwright.async_api import async_playwright
 from astrbot.api import AstrBotConfig, logger
 from astrbot.api.event import MessageChain, filter, AstrMessageEvent
 from astrbot.api.star import Context, Star, register, StarTools
-from astrbot.api.message_components import Plain
+from astrbot.api.message_components import Image, Plain
 
 from .api.bgm_api import BGMAPI
 from .api.bilibili_api import BilibiliAPI
@@ -25,7 +25,7 @@ from .api.ithome_rss import ITHomeRSS
 from .api.zaobao_api import ZaobaoAPI
 
 
-@register("astrbot_plugin_zhenxunribao_mod", "Astraea35", "小真寻记者为你献上今日报道！（魔改版）", "1.4.4", "https://github.com/Astraea35/astrbot_plugin_zhenxunribao_mod")
+@register("astrbot_plugin_zhenxunribao_mod", "Astraea35", "小真寻记者为你献上今日报道！（魔改版）", "1.4.6", "https://github.com/Astraea35/astrbot_plugin_zhenxunribao_mod")
 class ZhenxunReportPlugin(Star):
     _SCHEDULER_STATE_ATTR = '_astrbot_zhenxunribao_mod_scheduler_state'
 
@@ -206,7 +206,7 @@ class ZhenxunReportPlugin(Star):
         umo = event.unified_msg_origin
         if event.get_platform_name() == "telegram":
             try:
-                yield event.plain_result(await self._generate_daily_text())
+                yield event.chain_result((await self._generate_daily_chain()).chain)
             except Exception as error:
                 logger.error("Telegram daily report failed: %s", type(error).__name__)
                 yield event.plain_result("日报获取失败，请稍后重试。")
@@ -244,12 +244,55 @@ class ZhenxunReportPlugin(Star):
 
     async def _generate_daily_text(self) -> str:
         """Use the same sources as the QQ poster without rendering an image."""
-        anime, hotwords, hitokoto, holidays, world, technology = await self._fetch_all_data(
+        return self._format_daily_text(await self._fetch_daily_text_data())
+
+    async def _fetch_daily_text_data(self):
+        return await self._fetch_all_data(
             max_anime_count=self.config.get("max_anime_count", 4),
             max_news_count=self.config.get("max_news_count", 5),
             max_hotword_count=self.config.get("max_hotword_count", 4),
             max_holiday_count=self.config.get("max_holiday_count", 5),
         )
+
+    async def _generate_daily_chain(self) -> MessageChain:
+        data = await self._fetch_daily_text_data()
+        chain = [Plain(self._format_daily_text(data))]
+        covers = [
+            item["image"] for item in data[0]
+            if isinstance(item, dict) and item.get("image")
+        ]
+        if covers:
+            async with aiohttp.ClientSession(
+                trust_env=False, timeout=aiohttp.ClientTimeout(total=20),
+            ) as session:
+                images = await asyncio.gather(*[
+                    self._fetch_anime_cover(session, url)
+                    for url in covers
+                ])
+            chain.extend(Image.fromBytes(image) for image in images if image)
+        return MessageChain(chain)
+
+    async def _fetch_anime_cover(self, session, url: str) -> bytes | None:
+        proxy = self.config.get("tg_cover_proxy", "")
+        if not proxy or not url.startswith(("http://", "https://")):
+            return None
+        try:
+            async with session.get(url, proxy=proxy) as response:
+                response.raise_for_status()
+                if not response.headers.get("Content-Type", "").startswith("image/"):
+                    return None
+                content = bytearray()
+                async for chunk in response.content.iter_chunked(64 * 1024):
+                    content.extend(chunk)
+                    if len(content) > 10 * 1024 * 1024:
+                        return None
+                return bytes(content) if content else None
+        except (aiohttp.ClientError, asyncio.TimeoutError) as error:
+            logger.warning("Telegram anime cover unavailable: %s", type(error).__name__)
+            return None
+
+    def _format_daily_text(self, data) -> str:
+        anime, hotwords, hitokoto, holidays, world, technology = data
         date = get_current_date_info()
         lines = [
             "**今日日报**",
@@ -581,7 +624,7 @@ html, body {
         image_path = None
         success_count = 0
         qq_targets = []
-        telegram_text = None
+        telegram_chain = None
         for target in group_list:
             platform = (
                 self.context.get_platform_inst(str(target).split(":", 1)[0])
@@ -589,9 +632,9 @@ html, body {
             )
             if platform and platform.meta().name == "telegram":
                 try:
-                    if telegram_text is None:
-                        telegram_text = await self._generate_daily_text()
-                    await self.context.send_message(str(target), MessageChain([Plain(telegram_text)]))
+                    if telegram_chain is None:
+                        telegram_chain = await self._generate_daily_chain()
+                    await self.context.send_message(str(target), telegram_chain)
                     success_count += 1
                 except Exception as error:
                     logger.error("Telegram daily push failed: %s", type(error).__name__)
