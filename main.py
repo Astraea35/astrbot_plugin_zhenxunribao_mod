@@ -1,4 +1,4 @@
-﻿import asyncio
+import asyncio
 import base64
 import os
 import re
@@ -25,7 +25,7 @@ from .api.ithome_rss import ITHomeRSS
 from .api.zaobao_api import ZaobaoAPI
 
 
-@register("astrbot_plugin_zhenxunribao_mod", "Astraea35", "小真寻记者为你献上今日报道！（魔改版）", "1.4.6", "https://github.com/Astraea35/astrbot_plugin_zhenxunribao_mod")
+@register("astrbot_plugin_zhenxunribao_mod", "Astraea35", "小真寻记者为你献上今日报道！（魔改版）", "1.4.7", "https://github.com/Astraea35/astrbot_plugin_zhenxunribao_mod")
 class ZhenxunReportPlugin(Star):
     _SCHEDULER_STATE_ATTR = '_astrbot_zhenxunribao_mod_scheduler_state'
 
@@ -256,7 +256,8 @@ class ZhenxunReportPlugin(Star):
 
     async def _generate_daily_chain(self) -> MessageChain:
         data = await self._fetch_daily_text_data()
-        chain = [Plain(self._format_daily_text(data))]
+        formatted_text = self._format_daily_text(data)
+        chain = []
         covers = [
             item["image"] for item in data[0]
             if isinstance(item, dict) and item.get("image")
@@ -265,11 +266,10 @@ class ZhenxunReportPlugin(Star):
             async with aiohttp.ClientSession(
                 trust_env=False, timeout=aiohttp.ClientTimeout(total=20),
             ) as session:
-                images = await asyncio.gather(*[
-                    self._fetch_anime_cover(session, url)
-                    for url in covers
-                ])
-            chain.extend(Image.fromBytes(image) for image in images if image)
+                primary_image = await self._fetch_anime_cover(session, covers[0])
+                if primary_image:
+                    chain.append(Image.fromBytes(primary_image))
+        chain.append(Plain(formatted_text))
         return MessageChain(chain)
 
     async def _fetch_anime_cover(self, session, url: str) -> bytes | None:
@@ -294,40 +294,60 @@ class ZhenxunReportPlugin(Star):
     def _format_daily_text(self, data) -> str:
         anime, hotwords, hitokoto, holidays, world, technology = data
         date = get_current_date_info()
+        date_header = f"{date.get('date_str', '')} {date.get('week_cn', '')}"
+        lunar = str(date.get("cn_date_str", "")).strip()
+        if lunar:
+            date_header += f" · {lunar}"
+
         lines = [
-            "**今日日报**",
-            "",
-            f"{date.get('date_str', '')} {date.get('week_cn', '')} {date.get('cn_date_str', '')}",
+            f"📅 **真寻日报** · `{date_header}`",
         ]
-        for title, items in (
-            ("世界新闻", world), ("IT 科技", technology),
-            ("今日新番", anime), ("B站热搜", hotwords),
-        ):
+
+        sections = [
+            ("🌍 **世界热点**", world, True),
+            ("💻 **IT 科技**", technology, True),
+            ("📺 **今日新番**", anime, False),
+            ("🔥 **B站热搜**", hotwords, False),
+        ]
+
+        num_emojis = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣"]
+        for section_title, items, is_news in sections:
             if not items:
                 continue
-            lines.extend(("", f"**{title}**", ""))
-            for index, item in enumerate(items, 1):
+            lines.append(f"\n{section_title}")
+            for index, item in enumerate(items[:4]):
                 value = (
                     item.get("title") or item.get("keyword") or item.get("name") or ""
                     if isinstance(item, dict) else str(item)
-                )
-                if value:
-                    link = item.get("url") or item.get("link") if isinstance(item, dict) else ""
-                    if link and str(link).startswith(("http://", "https://")):
-                        value = f"[{value}]({link})"
-                    lines.extend((f"{index}. {value}", ""))
+                ).strip()
+                if not value:
+                    continue
+                link = item.get("url") or item.get("link") if isinstance(item, dict) else ""
+                if link and str(link).startswith(("http://", "https://")):
+                    value = f"[{value}]({link})"
+                elif not is_news and section_title.startswith("📺"):
+                    value = f"《{value}》"
+
+                prefix = num_emojis[index] if index < len(num_emojis) else f"{index+1}."
+                lines.append(f"{prefix} {value}")
+
         if holidays:
-            lines.extend(("", "**节假日倒计时**", ""))
-            lines.extend(
-                f"- {item.get('name', '')}：{item.get('days_left', '')} 天"
-                for item in holidays if isinstance(item, dict)
-            )
+            lines.append("\n⏳ **节假日倒计时**")
+            holiday_items = []
+            for item in holidays[:3]:
+                if isinstance(item, dict) and item.get("name") and item.get("days_left") is not None:
+                    holiday_items.append(f"• {item['name']}：`{item['days_left']}天`")
+            if holiday_items:
+                lines.append("  ".join(holiday_items))
+
         if hitokoto and hitokoto.get("hitokoto"):
-            lines.extend((
-                "", "**今日一言**", "", hitokoto["hitokoto"], "",
-                f"出处：{hitokoto.get('from', '佚名')}",
-            ))
-        return "\n".join(lines)
+            lines.append(
+                f"\n> 💬 **今日一言**\n"
+                f"> {hitokoto['hitokoto'].strip()}\n"
+                f"> —— *{hitokoto.get('from', '佚名')}*"
+            )
+
+        return "\n".join(lines).strip()
 
     async def _generate_daily_image(self) -> str:
         logger.info("开始生成日报")
